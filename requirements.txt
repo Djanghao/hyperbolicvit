@@ -1,0 +1,9 @@
+scipy==1.10.1
+torch
+torchvision
+geoopt
+numpy
+tqdm
+tensorboard
+matplotlib
+Pillow

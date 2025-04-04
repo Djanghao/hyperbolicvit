@@ -173,7 +173,7 @@ def validate(model, val_loader, device):
     return accuracy, top5
 
 # Training function
-def train_ddp(rank, world_size):
+def train_ddp(rank, world_size, dataset_name='imagenet'):
     # Initialize the process group
     dist.init_process_group(backend='nccl', init_method='env://', world_size=world_size, rank=rank)
     torch.cuda.set_device(rank)
@@ -182,17 +182,32 @@ def train_ddp(rank, world_size):
     set_seed(42)  # Set a fixed seed for reproducibility
 
     # Set hyperparameters
-    batch_size = 32
+    # batch_size = 32
+    batch_size = 30
     num_epochs = 350       
     learning_rate = 5e-3 / world_size 
     output_dir = './output'
+    
+    # Set dataset-specific parameters
+    if dataset_name.lower() == 'cifar10':
+        num_classes = 10
+        img_size = 32
+        patch_size = 4
+    else:  # 'imagenet'
+        num_classes = 1000
+        img_size = 224
+        patch_size = 16
 
     # Model setup
-    model = Net(num_classes=1000).to(device)  # ImageNet has 1000 classes
+    model = Net(
+        img_size=img_size,
+        patch_size=patch_size,
+        num_classes=num_classes
+    ).to(device)
     model = DDP(model, device_ids=[rank])  # Use DDP for distributed training
 
     # Data augmentation and normalization for ImageNet
-    transform = transforms.Compose([
+    transform_imagenet = transforms.Compose([
         transforms.Resize(256),
         transforms.CenterCrop(224),
         transforms.RandomHorizontalFlip(),
@@ -202,7 +217,7 @@ def train_ddp(rank, world_size):
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
     
-    transform_test = transforms.Compose([
+    transform_imagenet_test = transforms.Compose([
         transforms.Resize(256),
         transforms.CenterCrop(224),
         transforms.ToTensor(),
@@ -220,11 +235,19 @@ def train_ddp(rank, world_size):
         transforms.ToTensor(),
     ])
 
-    train_dataset = datasets.ImageNet(root='/data/jacob/ImageNet/', split='train', transform=transform)
-    val_dataset = datasets.ImageNet(root='/data/jacob/ImageNet/', split='val', transform=transform_test)
-
-    # train_dataset = datasets.CIFAR10(root='/data/jacob/cifar10/', train=True, download=True, transform=transform_cifar)
-    # val_dataset = datasets.CIFAR10(root='/data/jacob/cifar10/', train=False, download=True, transform=transform_cifar_test)
+    # Choose dataset based on parameter
+    if dataset_name.lower() == 'cifar10':
+        train_dataset = datasets.CIFAR10(root='/home/tmp/workspace/hyperbolicvit/data/cifar10', 
+                                      train=True, download=True, transform=transform_cifar)
+        val_dataset = datasets.CIFAR10(root='/home/tmp/workspace/hyperbolicvit/data/cifar10', 
+                                     train=False, download=True, transform=transform_cifar_test)
+        logger.info(f"Using CIFAR-10 dataset with image size {img_size} and patch size {patch_size}")
+    else:  # 'imagenet'
+        train_dataset = datasets.ImageNet(root='/home/tmp/workspace/hyperbolicvit/data/imagenet10', 
+                                        split='train', transform=transform_imagenet)
+        val_dataset = datasets.ImageNet(root='/home/tmp/workspace/hyperbolicvit/data/imagenet10', 
+                                      split='val', transform=transform_imagenet_test)
+        logger.info(f"Using ImageNet dataset with image size {img_size} and patch size {patch_size}")
     
     # Sampler and DataLoader
     train_sampler = DistributedSampler(train_dataset)
@@ -314,8 +337,19 @@ def train_ddp(rank, world_size):
 # Main function
 def main():
     world_size = torch.cuda.device_count()
-    rank = int(os.environ['RANK'])  # rank should be set by distributed launcher
-    train_ddp(rank, world_size)
+    # Handle both distributed and single-node execution
+    if 'RANK' in os.environ:
+        rank = int(os.environ['RANK'])  # In distributed mode
+    else:
+        rank = 0  # In single-node mode
+        os.environ['MASTER_ADDR'] = 'localhost'
+        os.environ['MASTER_PORT'] = '12355'
+        os.environ['WORLD_SIZE'] = str(world_size)
+        os.environ['RANK'] = str(rank)
+    
+    # Get dataset from environment variable, default to ImageNet
+    dataset_name = os.environ.get('DATASET', 'imagenet')
+    train_ddp(rank, world_size, dataset_name)
 
 if __name__ == "__main__":
     main()
