@@ -173,7 +173,7 @@ def validate(model, val_loader, device):
     return accuracy, top5
 
 # Training function
-def train_ddp(rank, world_size, dataset_name='imagenet'):
+def train_ddp(rank, world_size, dataset_name='imagenet', subset_ratio=0.1):
     # Initialize the process group
     dist.init_process_group(backend='nccl', init_method='env://', world_size=world_size, rank=rank)
     torch.cuda.set_device(rank)
@@ -237,17 +237,38 @@ def train_ddp(rank, world_size, dataset_name='imagenet'):
 
     # Choose dataset based on parameter
     if dataset_name.lower() == 'cifar10':
-        train_dataset = datasets.CIFAR10(root='/home/tmp/workspace/hyperbolicvit/data/cifar10', 
+        full_train_dataset = datasets.CIFAR10(root='/home/tmp/workspace/hyperbolicvit/data/cifar10', 
                                       train=True, download=True, transform=transform_cifar)
-        val_dataset = datasets.CIFAR10(root='/home/tmp/workspace/hyperbolicvit/data/cifar10', 
+        full_val_dataset = datasets.CIFAR10(root='/home/tmp/workspace/hyperbolicvit/data/cifar10', 
                                      train=False, download=True, transform=transform_cifar_test)
         logger.info(f"Using CIFAR-10 dataset with image size {img_size} and patch size {patch_size}")
     else:  # 'imagenet'
-        train_dataset = datasets.ImageNet(root='/home/tmp/workspace/hyperbolicvit/data/imagenet10', 
+        full_train_dataset = datasets.ImageNet(root='/home/tmp/workspace/hyperbolicvit/data/imagenet10', 
                                         split='train', transform=transform_imagenet)
-        val_dataset = datasets.ImageNet(root='/home/tmp/workspace/hyperbolicvit/data/imagenet10', 
+        full_val_dataset = datasets.ImageNet(root='/home/tmp/workspace/hyperbolicvit/data/imagenet10', 
                                       split='val', transform=transform_imagenet_test)
         logger.info(f"Using ImageNet dataset with image size {img_size} and patch size {patch_size}")
+    
+    # Create subset of datasets if subset_ratio < 1.0
+    if subset_ratio < 1.0:
+        # Calculate subset sizes
+        train_size = int(len(full_train_dataset) * subset_ratio)
+        val_size = int(len(full_val_dataset) * subset_ratio)
+        
+        # Create random subsets
+        indices = torch.randperm(len(full_train_dataset))
+        train_indices = indices[:train_size]
+        train_dataset = torch.utils.data.Subset(full_train_dataset, train_indices)
+        
+        indices = torch.randperm(len(full_val_dataset))
+        val_indices = indices[:val_size]
+        val_dataset = torch.utils.data.Subset(full_val_dataset, val_indices)
+        
+        logger.info(f"Using {subset_ratio:.1%} of the dataset: {train_size} training samples, {val_size} validation samples")
+    else:
+        train_dataset = full_train_dataset
+        val_dataset = full_val_dataset
+        logger.info(f"Using full dataset: {len(train_dataset)} training samples, {len(val_dataset)} validation samples")
     
     # Sampler and DataLoader
     train_sampler = DistributedSampler(train_dataset)
@@ -349,7 +370,11 @@ def main():
     
     # Get dataset from environment variable, default to ImageNet
     dataset_name = os.environ.get('DATASET', 'imagenet')
-    train_ddp(rank, world_size, dataset_name)
+    
+    # Get subset ratio from environment variable
+    subset_ratio = float(os.environ.get('SUBSET_RATIO', '0.1'))
+    
+    train_ddp(rank, world_size, dataset_name, subset_ratio)
 
 if __name__ == "__main__":
     main()
